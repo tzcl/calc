@@ -3,13 +3,20 @@ import Text.Parsec.String
 
 parseNumber :: Parser Int
 parseNumber = do
-  neg <- try $ char '-'
+  neg <- (char '-' >> return "-") <|> return ""
   n' <- many1 $ oneOf "0123456789"
-  return $ read (neg : n')
+  return $ read (neg ++ n')
+
+parseAddition :: Parser Int
+parseAddition = do
+  n1 <- parseNumber
+  char '+'
+  n2 <- parseNumber
+  return (n1 + n2)
 
 calculation :: Parser Int
 calculation = do
-  parseNumber
+  try parseAddition <|> parseNumber
 
 calculate :: String -> String
 calculate s =
