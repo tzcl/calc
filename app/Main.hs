@@ -1,8 +1,25 @@
+import Control.Monad.State
+import qualified Data.Map as M
 import Text.Parsec
 import Text.Parsec.Expr
 import Text.Parsec.Language
 import Text.Parsec.String
 import Text.Parsec.Token
+
+data Expr
+  = Const Double
+  | Name String
+  | Neg Expr
+  | Mul Expr Expr
+  | Div Expr Expr
+  | Mod Expr Expr
+  | Add Expr Expr
+  | Sub Expr Expr
+  deriving (Show)
+
+data Statement
+  = Print Expr
+  deriving (Show)
 
 lexer :: TokenParser ()
 lexer =
@@ -13,51 +30,104 @@ lexer =
         }
     )
 
--- Promote everything to a double to make life easier
-parseNumber :: Parser Double
+parseNumber :: Parser Expr
 parseNumber = do
   val <- naturalOrFloat lexer
   case val of
-    Left i -> return $ fromIntegral i
-    Right n -> return n
+    Left i -> return $ Const $ fromIntegral i
+    Right n -> return $ Const n
 
--- Haskell doesn't provide a mod function for Doubles
-doubleMod :: Double -> Double -> Double
-doubleMod top bottom = fromInteger $ floor top `mod` floor bottom
+parseName :: Parser Expr
+parseName = do
+  name <- identifier lexer
+  return $ Name name
 
-parseExpression :: Parser Double
-parseExpression =
+parseExpr :: Parser Expr
+parseExpr =
   buildExpressionParser
-    [ [ Prefix (reservedOp lexer "-" >> return negate),
+    [ [ Prefix (reservedOp lexer "-" >> return Neg),
         Prefix (reservedOp lexer "+" >> return id)
       ],
-      [ Infix (reservedOp lexer "*" >> return (*)) AssocLeft,
-        Infix (reservedOp lexer "/" >> return (/)) AssocLeft,
-        Infix (reservedOp lexer "%" >> return doubleMod) AssocLeft
+      [ Infix (reservedOp lexer "*" >> return Mul) AssocLeft,
+        Infix (reservedOp lexer "/" >> return Div) AssocLeft,
+        Infix (reservedOp lexer "%" >> return Mod) AssocLeft
       ],
-      [ Infix (reservedOp lexer "+" >> return (+)) AssocLeft,
-        Infix (reservedOp lexer "-" >> return (-)) AssocLeft
+      [ Infix (reservedOp lexer "+" >> return Add) AssocLeft,
+        Infix (reservedOp lexer "-" >> return Sub) AssocLeft
       ]
     ]
     parseTerm
 
-parseTerm :: Parser Double
-parseTerm = parens lexer parseExpression <|> parseNumber
+parseTerm :: Parser Expr
+parseTerm = parens lexer parseExpr <|> parseNumber <|> parseName
 
-parseInput :: Parser Double
+parsePrint :: Parser Statement
+parsePrint = do
+  reserved lexer "print"
+  Print <$> parseExpr
+
+parseInput :: Parser Statement
 parseInput = do
   whiteSpace lexer
-  n <- parseExpression
+  s <- parsePrint
   eof
-  return n
+  return s
 
-calculate :: String -> String
+-- Interpreter
+type Calculator a = StateT (M.Map String Expr) IO a
+
+interpretExpr :: Expr -> Calculator Double
+interpretExpr (Const n) = return n
+interpretExpr (Name n) = do
+  varmap <- get
+  case M.lookup n varmap of
+    Nothing -> fail $ "Uknown identifier: " ++ n
+    Just e -> interpretExpr e
+interpretExpr (Neg expr) = do
+  val <- interpretExpr expr
+  return $ negate val
+interpretExpr (Mul e1 e2) = do
+  v1 <- interpretExpr e1
+  v2 <- interpretExpr e2
+  return $ v1 * v2
+interpretExpr (Div e1 e2) = do
+  v1 <- interpretExpr e1
+  v2 <- interpretExpr e2
+  return $ v1 / v2
+interpretExpr (Mod e1 e2) = do
+  v1 <- interpretExpr e1
+  v2 <- interpretExpr e2
+  let n1 = floor v1
+      n2 = floor v2
+      m = n1 `mod` n2
+  return $ fromInteger m
+interpretExpr (Add e1 e2) = do
+  v1 <- interpretExpr e1
+  v2 <- interpretExpr e2
+  return $ v1 + v2
+interpretExpr (Sub e1 e2) = do
+  v1 <- interpretExpr e1
+  v2 <- interpretExpr e2
+  return $ v1 - v2
+
+interpretStatement :: Statement -> Calculator ()
+interpretStatement (Print expr) = do
+  n <- interpretExpr expr
+  liftIO $ print n
+
+defaultVars :: M.Map String Expr
+defaultVars =
+  M.fromList
+    [ ("pi", Const 3.14)
+    ]
+
+calculate :: String -> IO ()
 calculate s =
   case ret of
-    Left e -> "error: " ++ show e
-    Right n -> "answer: " ++ show n
+    Left e -> putStrLn $ "error: " ++ show e
+    Right n -> evalStateT (interpretStatement n) defaultVars
   where
     ret = parse parseInput "calculator" s
 
 main :: IO ()
-main = interact (unlines . map calculate . lines)
+main = getContents >>= mapM_ calculate . lines
