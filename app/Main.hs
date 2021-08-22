@@ -1,22 +1,55 @@
 import Text.Parsec
+import Text.Parsec.Expr
+import Text.Parsec.Language
 import Text.Parsec.String
+import Text.Parsec.Token
 
-parseNumber :: Parser Int
+lexer :: TokenParser ()
+lexer =
+  makeTokenParser
+    ( javaStyle
+        { opStart = oneOf "+-*/%",
+          opLetter = oneOf "+-*/%"
+        }
+    )
+
+-- Promote everything to a double to make life easier
+parseNumber :: Parser Double
 parseNumber = do
-  neg <- (char '-' >> return "-") <|> return ""
-  n' <- many1 $ oneOf "0123456789"
-  return $ read (neg ++ n')
+  val <- naturalOrFloat lexer
+  case val of
+    Left i -> return $ fromIntegral i
+    Right n -> return n
 
-parseAddition :: Parser Int
-parseAddition = do
-  n1 <- parseNumber
-  char '+'
-  n2 <- parseNumber
-  return (n1 + n2)
+-- Haskell doesn't provide a mod function for Doubles
+doubleMod :: Double -> Double -> Double
+doubleMod top bottom = fromInteger $ floor top `mod` floor bottom
 
-calculation :: Parser Int
-calculation = do
-  try parseAddition <|> parseNumber
+parseExpression :: Parser Double
+parseExpression =
+  buildExpressionParser
+    [ [ Prefix (reservedOp lexer "-" >> return negate),
+        Prefix (reservedOp lexer "+" >> return id)
+      ],
+      [ Infix (reservedOp lexer "*" >> return (*)) AssocLeft,
+        Infix (reservedOp lexer "/" >> return (/)) AssocLeft,
+        Infix (reservedOp lexer "%" >> return doubleMod) AssocLeft
+      ],
+      [ Infix (reservedOp lexer "+" >> return (+)) AssocLeft,
+        Infix (reservedOp lexer "-" >> return (-)) AssocLeft
+      ]
+    ]
+    parseTerm
+
+parseTerm :: Parser Double
+parseTerm = parens lexer parseExpression <|> parseNumber
+
+parseInput :: Parser Double
+parseInput = do
+  whiteSpace lexer
+  n <- parseExpression
+  eof
+  return n
 
 calculate :: String -> String
 calculate s =
@@ -24,7 +57,7 @@ calculate s =
     Left e -> "error: " ++ show e
     Right n -> "answer: " ++ show n
   where
-    ret = parse calculation "" s
+    ret = parse parseInput "calculator" s
 
 main :: IO ()
 main = interact (unlines . map calculate . lines)
