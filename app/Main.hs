@@ -19,6 +19,7 @@ data Expr
 
 data Statement
   = Print Expr
+  | Assign String
   deriving (Show)
 
 lexer :: TokenParser ()
