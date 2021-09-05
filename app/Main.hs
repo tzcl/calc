@@ -17,6 +17,16 @@ data Expr
   | Add Expr Expr
   | Sub Expr Expr
   | Function String Expr
+  | Conditional Condition Expr Expr
+  deriving (Show)
+
+data Condition
+  = And Condition Condition
+  | Or Condition Condition
+  | Not Condition
+  | Equal Expr Expr
+  | LessThan Expr Expr
+  | LessThanEqual Expr Expr
   deriving (Show)
 
 data FunctionBody = FunctionBody String Expr
@@ -32,8 +42,9 @@ lexer :: TokenParser ()
 lexer =
   makeTokenParser
     ( javaStyle
-        { opStart = oneOf "+-*/%",
-          opLetter = oneOf "+-*/%"
+        { opStart = oneOf "+-*/%|&=!<>",
+          opLetter = oneOf "+-*/%|&=!<>",
+          reservedNames = ["let", "def", "print", "if", "then", "else"]
         }
     )
 
@@ -71,8 +82,43 @@ parseFunction = do
   expr <- parens lexer parseExpr
   return $ Function ident expr
 
+parseConditional :: Parser Expr
+parseConditional = do
+  reserved lexer "if"
+  c <- parseCondition
+  reserved lexer "then"
+  e1 <- parseExpr
+  reserved lexer "else"
+  Conditional c e1 <$> parseExpr
+
+parseCondition :: Parser Condition
+parseCondition =
+  buildExpressionParser
+    [ [Prefix (reservedOp lexer "~" >> return Not)],
+      [ Infix (reservedOp lexer "&&" >> return And) AssocLeft,
+        Infix (reservedOp lexer "||" >> return Or) AssocLeft
+      ]
+    ]
+    parseConditionalTerm
+
+parseConditionalTerm :: Parser Condition
+parseConditionalTerm =
+  parens lexer parseCondition <|> parseComparison
+
+parseComparison :: Parser Condition
+parseComparison = do
+  e1 <- parseExpr
+  f <-
+    (reserved lexer "==" >> return (Equal e1))
+      <|> (reserved lexer "<" >> return (LessThan e1))
+      <|> (reserved lexer "<=" >> return (LessThanEqual e1))
+      <|> (reserved lexer ">" >> return (Not . LessThanEqual e1))
+      <|> (reserved lexer ">=" >> return (Not . LessThan e1))
+      <|> (reserved lexer "!=" >> return (Not . Equal e1))
+  f <$> parseExpr
+
 parseTerm :: Parser Expr
-parseTerm = parens lexer parseExpr <|> parseNumber <|> try parseFunction <|> parseName
+parseTerm = parens lexer parseExpr <|> parseNumber <|> try parseFunction <|> try parseConditional <|> parseName
 
 parsePrint :: Parser Statement
 parsePrint = do
@@ -107,6 +153,29 @@ type StoredVal = Either Double FunctionBody
 type Calculator = StateT (M.Map String StoredVal) IO
 
 type SafeCalculator a = ErrorT String Calculator a
+
+interpretCondition :: Condition -> SafeCalculator Bool
+interpretCondition (Not c) = interpretCondition c >>= return . not
+interpretCondition (And c1 c2) = do
+  b1 <- interpretCondition c1
+  b2 <- interpretCondition c2
+  return (b1 && b2)
+interpretCondition (Or c1 c2) = do
+  b1 <- interpretCondition c1
+  b2 <- interpretCondition c2
+  return (b1 || b2)
+interpretCondition (Equal e1 e2) = do
+  v1 <- interpretExpr e1
+  v2 <- interpretExpr e2
+  return (v1 == v2)
+interpretCondition (LessThan e1 e2) = do
+  v1 <- interpretExpr e1
+  v2 <- interpretExpr e2
+  return (v1 < v2)
+interpretCondition (LessThanEqual e1 e2) = do
+  v1 <- interpretExpr e1
+  v2 <- interpretExpr e2
+  return (v1 <= v2)
 
 interpretExpr :: Expr -> SafeCalculator Double
 interpretExpr (Const n) = return n
@@ -153,6 +222,9 @@ interpretExpr (Function fn e) = do
       r <- interpretExpr expr
       put context
       return r
+interpretExpr (Conditional cond e1 e2) = do
+  b <- interpretCondition cond
+  if b then interpretExpr e1 else interpretExpr e2
 
 interpretStatement :: Statement -> SafeCalculator ()
 interpretStatement (Print expr) = do
@@ -161,7 +233,7 @@ interpretStatement (Print expr) = do
 interpretStatement (Assignment ident expr) = do
   n <- interpretExpr expr
   modify (M.insert ident (Left n))
-interpretStatement (Definition fn body) = do
+interpretStatement (Definition fn body) =
   modify (M.insert fn (Right body))
 
 defaultVars :: M.Map String StoredVal
